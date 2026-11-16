@@ -12,7 +12,34 @@
         android:layout_height="match_parent"
         app:resize_mode="fit"
         app:shutter_background_color="#000000"
+        app:surface_type="texture_view"
         app:use_controller="false" />
+
+    <!-- Hassas içerik örtüsü: "Göster" ile açılır -->
+    <LinearLayout
+        android:id="@+id/blurCover"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#66000000"
+        android:clickable="true"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Hassas içerik bulanıklaştırıldı"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/reveal"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Göster" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/index"
@@ -57,11 +84,25 @@
             android:textColor="#BBBBBB"
             android:textSize="13sp" />
 
-        <Button
-            android:id="@+id/open"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="Tam videoyu aç" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/open"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Tam videoyu aç" />
+
+            <Button
+                android:id="@+id/blurToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="Bulanıklaştır"
+                android:visibility="gone" />
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>

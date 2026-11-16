@@ -104,6 +104,7 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
         scraper = YandexScraper(web, this)
         scraper.safeLevel = prefs.getInt("filtre", 1)
         scraper.incognito = prefs.getBoolean("gizli", true)
+        adapter.blurSensitive = prefs.getBoolean("bulanik", true)
         pager.adapter = adapter
         pager.offscreenPageLimit = 1
         pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
@@ -156,6 +157,7 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
         attached?.player = null
         attached = null
         current = -1
+        adapter.resetChoices()
         items.clear()
         adapter.notifyDataSetChanged()
         status.text = "“$q” aranıyor…"
@@ -178,6 +180,10 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
             text = "Klip bitince sonrakine otomatik geç"
             isChecked = autoNext
         }
+        val bulanik = CheckBox(this).apply {
+            text = "Hassas içeriği bulanıklaştır (\"Göster\" ile açılır)"
+            isChecked = adapter.blurSensitive
+        }
         val label = TextView(this).apply {
             text = "Güvenli arama"
             setPadding(0, pad / 2, 0, 0)
@@ -189,7 +195,7 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
             group.addView(RadioButton(this).apply { id = 1000 + i; text = n })
         }
         group.check(1000 + scraper.safeLevel)
-        box.addView(gizli); box.addView(oto); box.addView(label); box.addView(group)
+        box.addView(gizli); box.addView(oto); box.addView(bulanik); box.addView(label); box.addView(group)
 
         AlertDialog.Builder(this)
             .setTitle("Ayarlar")
@@ -200,11 +206,17 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
                 scraper.safeLevel = level
                 scraper.incognito = gizli.isChecked
                 autoNext = oto.isChecked
+                if (bulanik.isChecked != adapter.blurSensitive) {
+                    adapter.blurSensitive = bulanik.isChecked
+                    adapter.resetChoices()
+                    adapter.notifyItemRangeChanged(0, items.size)
+                }
                 player.repeatMode = repeatFor(autoNext)
                 val e = prefs.edit()
                     .putInt("filtre", level)
                     .putBoolean("gizli", gizli.isChecked)
                     .putBoolean("oto", autoNext)
+                    .putBoolean("bulanik", bulanik.isChecked)
                 if (gizli.isChecked) e.remove("son")
                 e.apply()
                 // Filtre değiştiyse mevcut aramayı yeni ayarla tekrarla

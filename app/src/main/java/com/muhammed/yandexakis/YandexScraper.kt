@@ -17,7 +17,8 @@ data class VideoItem(
     val preview: String,   // Yandex'in animasyonlu özet klibi (mp4)
     val title: String,
     val original: String?, // videonun asıl sayfası (YouTube, VK vb.)
-    val host: String?
+    val host: String?,
+    val sensitive: Boolean = false // Yandex'in "bulanıklaştır" işaretlediği içerik
 )
 
 /**
@@ -195,7 +196,8 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
                     preview = o.getString("p"),
                     title = o.optString("t"),
                     original = u,
-                    host = u?.let { Uri.parse(it).host?.removePrefix("www.") }
+                    host = u?.let { Uri.parse(it).host?.removePrefix("www.") },
+                    sensitive = o.optBoolean("a", false)
                 )
             }
         }
@@ -231,7 +233,10 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
     var t = nearest(titleRe, s, c, okTitle);
     if (t) { try { t = JSON.parse('"' + t + '"'); } catch(e) {} t = t.replace(/<[^>]+>/g,''); }
     var u = nearest(urlRe, s, c, okUrl);
-    out.push({p: 'https://video-preview.s3.yandex.net/' + id + '.mp4', t: t || '', u: u || ''});
+    var near = h.substring(Math.max(0, m.index - 1500), m.index + 1500);
+    var adult = /"(?:is_?adult|adult|is_?porno?|porno|blur(?:red)?|need_?blur|nsfw|sensitive|is_?erotic|erotic)"\s*:\s*(?:true|1|"(?:true|1|yes)")/i.test(near)
+      || /serp-item_(?:adult|blur)|thumb_blur|_blurred|is-adult/i.test(near);
+    out.push({p: 'https://video-preview.s3.yandex.net/' + id + '.mp4', t: t || '', u: u || '', a: adult});
   }
   return JSON.stringify(out);
  } catch (e) { return '[]'; }
