@@ -54,6 +54,9 @@ class YandexScraper(
     private var pending: Runnable? = null
     private val seen = HashSet<String>()
     private var lastInfo = ""
+    private var hoverRunning = false
+    private var hoverLeft = 0
+    private var totalFound = 0
 
     var busy = false
         private set
@@ -88,7 +91,7 @@ class YandexScraper(
             loadWithOverviewMode = true
             builtInZoomControls = true
             displayZoomControls = false
-            mediaPlaybackRequiresUserGesture = true
+            mediaPlaybackRequiresUserGesture = false // sayfadaki önizleme klipleri kendiliğinden başlasın
             blockNetworkImage = true // veri tasarrufu; doğrulamada açılır
         }
         forceDesktop()
@@ -153,10 +156,12 @@ class YandexScraper(
         query = q
         page = 0
         misses = 0
+        totalFound = 0
         exhausted = false
         seen.clear()
         token++
         busy = true
+        listener.onProgress(this, "Arama başlatıldı…")
         load()
     }
 
@@ -240,7 +245,20 @@ class YandexScraper(
             if (t != token) return@evaluateJavascript
             val all = parse(res)
             val fresh = all.filter { seen.add(it.preview) }
-            listener.onProgress(this, lastInfo + "\nbulunan: ${all.size}, yeni: ${fresh.size}")
+            totalFound += fresh.size
+            listener.onProgress(this, lastInfo + "\nbulunan toplam: $totalFound, yeni: ${fresh.size}" +
+                (if (hoverRunning) "\nvideoların üzerine geliniyor: $hoverLeft kaldı" else ""))
+            if (hoverRunning) {
+                // Fareyle üzerine gelme işlemi sürüyor: yakalananları aldıkça ver
+                if (fresh.isNotEmpty()) {
+                    misses = 0
+                    busy = false
+                    listener.onItems(this, fresh)
+                    listener.onRoundEnd(this, fresh.size, false)
+                }
+                schedule(2000) { if (t == token) extract(t, fromLoad) }
+                return@evaluateJavascript
+            }
             if (fresh.isNotEmpty()) {
                 misses = 0
                 busy = false
@@ -265,9 +283,12 @@ class YandexScraper(
         val s = JSONTokener(res).nextValue() as? String
         if (s == null) { lastInfo = "JS sonucu boş"; emptyList() } else {
             val root = JSONObject(s)
+            hoverRunning = root.optInt("run") == 1
+            hoverLeft = root.optInt("left")
             lastInfo = "Sayfa: " + root.optString("title").take(50) +
                 "\nAdres: " + root.optString("url").take(70) +
                 "\nHTML: " + (root.optInt("len") / 1024) + " KB, aday: " + root.optInt("cand") +
+                ", küçük resim: " + root.optInt("thumbs") + ", video etiketi: " + root.optInt("vtags") +
                 (if (root.has("err")) "\nHata: " + root.optString("err") else "")
             val a = root.getJSONArray("items")
             (0 until a.length()).map { i ->
@@ -319,9 +340,74 @@ class YandexScraper(
 """
 
         private const val JS_END = """
-  return JSON.stringify({items: out, len: h.length, cand: cand, url: location.href, title: document.title});
+  return JSON.stringify({items: out, len: h.length, cand: cand, url: location.href, title: document.title,
+    run: window.__yaRun ? 1 : 0, left: window.__yaLeft || 0,
+    thumbs: document.querySelectorAll('img').length, vtags: document.querySelectorAll('video').length});
  } catch (e) { return JSON.stringify({items: [], len: 0, url: location.href, title: document.title, err: String(e)}); }
 })();
+"""
+
+        // Masaüstü Yandex, önizleme klibini ancak fare videonun üzerine gelince yükler.
+        // Burada her küçük resmin üzerine sırayla "fareyle gelinmiş" gibi olay gönderip
+        // o anda oynamaya başlayan <video> klibini (ya da ağdan inen mp4'ü) yakalıyoruz.
+        private const val HOVER_JS = """
+  document.querySelectorAll('video').forEach(function(v){ try { v.muted = true; } catch(e) {} });
+  window.__yaOut = window.__yaOut || [];
+  window.__yaSeen = window.__yaSeen || {};
+  if (!window.__yaDone) window.__yaDone = new WeakSet();
+  if (!window.__yaRun) {
+    var imgs = Array.prototype.slice.call(document.querySelectorAll('img')).filter(function(i){
+      var r = i.getBoundingClientRect();
+      return !window.__yaDone.has(i) && r.width >= 80 && r.height >= 45 && /vthumb|avatars\.mds|video/i.test(i.currentSrc || i.src || '');
+    });
+    if (imgs.length) {
+      window.__yaRun = 1; window.__yaLeft = imgs.length;
+      var fire = function(el, types){ types.forEach(function(tp){ try {
+        var ev = tp.indexOf('pointer') == 0
+          ? new PointerEvent(tp, {bubbles: tp.indexOf('enter') < 0 && tp.indexOf('leave') < 0, cancelable: true, pointerType: 'mouse', view: window})
+          : new MouseEvent(tp, {bubbles: tp.indexOf('enter') < 0 && tp.indexOf('leave') < 0, cancelable: true, view: window});
+        el.dispatchEvent(ev); } catch(e) {} }); };
+      var cardOf = function(img){ var e = img;
+        for (var k = 0; k < 8 && e.parentElement; k++) { e = e.parentElement;
+          if ((e.innerText || '').trim().length > 25 && e.querySelector('a')) return e; }
+        return img.parentElement || img; };
+      var newSrc = function(root){ var vs = root.querySelectorAll('video');
+        for (var i = 0; i < vs.length; i++) { var v = vs[i]; v.muted = true;
+          var s = v.currentSrc || v.src || ((v.querySelector('source') || {}).src);
+          if (s && s.indexOf('blob:') != 0 && !window.__yaSeen[s]) return s; }
+        return null; };
+      var netMp4 = function(from){ var es = performance.getEntriesByType('resource');
+        for (var i = es.length - 1; i >= from; i--) { var n = es[i].name;
+          if ((/\.mp4(\?|$)/i.test(n) || /video-preview|vh-preview|preview.*\.mp4/i.test(n) || es[i].initiatorType == 'video') && !window.__yaSeen[n]) return n; }
+        return null; };
+      var idx = 0;
+      var step = function(){
+        if (idx >= imgs.length) { window.__yaRun = 0; window.__yaLeft = 0; return; }
+        var img = imgs[idx++]; window.__yaDone.add(img); window.__yaLeft = imgs.length - idx;
+        var card = cardOf(img);
+        try { img.scrollIntoView({block: 'center'}); } catch(e) {}
+        var before = performance.getEntriesByType('resource').length;
+        var tg = [img, img.parentElement, card];
+        tg.forEach(function(t){ if (t) fire(t, ['pointerover','pointerenter','mouseover','mouseenter','pointermove','mousemove']); });
+        setTimeout(function(){
+          var s = newSrc(card) || newSrc(document) || netMp4(before);
+          if (s) {
+            window.__yaSeen[s] = 1;
+            var te = card.querySelector('[class*="title" i], h2, h3');
+            var title = ((te ? te.innerText : card.innerText) || '').trim().split('\n')[0].slice(0, 200);
+            var links = Array.prototype.slice.call(card.querySelectorAll('a[href]')).map(function(a){ return a.href; });
+            var ext = links.filter(function(x){ return !/yandex\./.test(x); })[0] || links[0] || '';
+            var adult = /blur|adult/i.test(card.className + ' ' + (card.innerHTML || '').slice(0, 4000));
+            window.__yaOut.push({p: s, t: title, u: ext, a: adult});
+          }
+          tg.forEach(function(t){ if (t) fire(t, ['pointerout','pointerleave','mouseout','mouseleave']); });
+          step();
+        }, 1400);
+      };
+      step();
+    }
+  }
+  window.__yaOut.splice(0).forEach(function(o){ if (!seen[o.p]) { seen[o.p] = 1; cand++; out.push(o); } });
 """
 
         // Video: Yandex'in animasyonlu önizleme klipleri
@@ -334,7 +420,7 @@ class YandexScraper(
     var x = info(m.index);
     out.push({p: 'https://video-preview.s3.yandex.net/' + id + '.mp4', t: x.t, u: x.u, a: x.a});
   }
-""" + JS_END
+""" + HOVER_JS + JS_END
 
         // GIF: Görseller'de GIF filtresiyle bulunan hareketli resimlerin asıl adresleri
         private const val GIF_JS = "(function(){\n try {" + JS_COMMON + """
