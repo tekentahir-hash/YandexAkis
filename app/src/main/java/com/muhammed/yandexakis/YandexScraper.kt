@@ -289,6 +289,8 @@ class YandexScraper(
                 "\nAdres: " + root.optString("url").take(70) +
                 "\nHTML: " + (root.optInt("len") / 1024) + " KB, aday: " + root.optInt("cand") +
                 ", küçük resim: " + root.optInt("thumbs") + ", video etiketi: " + root.optInt("vtags") +
+                ", ağdan video: " + root.optInt("net") +
+                (if (root.optString("sample").isNotEmpty()) "\nÖrnek: " + root.optString("sample") else "") +
                 (if (root.has("err")) "\nHata: " + root.optString("err") else "")
             val a = root.getJSONArray("items")
             (0 until a.length()).map { i ->
@@ -342,7 +344,10 @@ class YandexScraper(
         private const val JS_END = """
   return JSON.stringify({items: out, len: h.length, cand: cand, url: location.href, title: document.title,
     run: window.__yaRun ? 1 : 0, left: window.__yaLeft || 0,
-    thumbs: document.querySelectorAll('img').length, vtags: document.querySelectorAll('video').length});
+    thumbs: document.querySelectorAll('img').length, vtags: document.querySelectorAll('video').length,
+    sample: (function(){ var v = document.querySelector('video'); if (!v) return '';
+      return (v.outerHTML || '').replace(/<source/g,' <source').slice(0, 260) + ' | src=' + String(v.currentSrc || v.src || '').slice(0, 120); })(),
+    net: performance.getEntriesByType('resource').filter(function(e){ return /\.(mp4|m3u8|ts|m4s)(\?|$)/i.test(e.name); }).length});
  } catch (e) { return JSON.stringify({items: [], len: 0, url: location.href, title: document.title, err: String(e)}); }
 })();
 """
@@ -356,9 +361,11 @@ class YandexScraper(
   window.__yaSeen = window.__yaSeen || {};
   if (!window.__yaDone) window.__yaDone = new WeakSet();
   if (!window.__yaRun) {
-    var imgs = Array.prototype.slice.call(document.querySelectorAll('img')).filter(function(i){
+    var imgs = Array.prototype.slice.call(document.querySelectorAll('img, video')).filter(function(i){
       var r = i.getBoundingClientRect();
-      return !window.__yaDone.has(i) && r.width >= 80 && r.height >= 45 && /vthumb|avatars\.mds|video/i.test(i.currentSrc || i.src || '');
+      if (window.__yaDone.has(i) || r.width < 80 || r.height < 45) return false;
+      if (i.tagName == 'VIDEO') return true;
+      return /vthumb|avatars\.mds|video/i.test(i.currentSrc || i.src || '');
     });
     if (imgs.length) {
       window.__yaRun = 1; window.__yaLeft = imgs.length;
@@ -371,14 +378,20 @@ class YandexScraper(
         for (var k = 0; k < 8 && e.parentElement; k++) { e = e.parentElement;
           if ((e.innerText || '').trim().length > 25 && e.querySelector('a')) return e; }
         return img.parentElement || img; };
-      var newSrc = function(root){ var vs = root.querySelectorAll('video');
-        for (var i = 0; i < vs.length; i++) { var v = vs[i]; v.muted = true;
-          var s = v.currentSrc || v.src || ((v.querySelector('source') || {}).src);
-          if (s && s.indexOf('blob:') != 0 && !window.__yaSeen[s]) return s; }
+      var srcOf = function(v){
+        var c = [v.currentSrc, v.src, (v.querySelector('source') || {}).src,
+                 v.getAttribute('data-src'), v.getAttribute('data-video'), v.getAttribute('data-preview')];
+        for (var i = 0; i < c.length; i++) { var s = c[i];
+          if (s && /^https?:/.test(s) && !window.__yaSeen[s]) return s; }
+        return null; };
+      var newSrc = function(root){
+        if (root.tagName == 'VIDEO') { root.muted = true; var r0 = srcOf(root); if (r0) return r0; }
+        var vs = root.querySelectorAll('video');
+        for (var i = 0; i < vs.length; i++) { vs[i].muted = true; var s = srcOf(vs[i]); if (s) return s; }
         return null; };
       var netMp4 = function(from){ var es = performance.getEntriesByType('resource');
         for (var i = es.length - 1; i >= from; i--) { var n = es[i].name;
-          if ((/\.mp4(\?|$)/i.test(n) || /video-preview|vh-preview|preview.*\.mp4/i.test(n) || es[i].initiatorType == 'video') && !window.__yaSeen[n]) return n; }
+          if ((/\.(mp4|m3u8)(\?|$)/i.test(n) || /video-preview|vh-preview|preview.*\.mp4|master.*\.m3u8/i.test(n)) && !window.__yaSeen[n]) return n; }
         return null; };
       var idx = 0;
       var step = function(){
@@ -390,7 +403,7 @@ class YandexScraper(
         var tg = [img, img.parentElement, card];
         tg.forEach(function(t){ if (t) fire(t, ['pointerover','pointerenter','mouseover','mouseenter','pointermove','mousemove']); });
         setTimeout(function(){
-          var s = newSrc(card) || newSrc(document) || netMp4(before);
+          var s = newSrc(img) || newSrc(card) || netMp4(before);
           if (s) {
             window.__yaSeen[s] = 1;
             var te = card.querySelector('[class*="title" i], h2, h3');
