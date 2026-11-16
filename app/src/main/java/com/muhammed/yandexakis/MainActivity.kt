@@ -9,7 +9,11 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.webkit.WebView
 import android.widget.Button
+import android.app.AlertDialog
 import android.widget.CheckBox
+import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
@@ -34,7 +38,7 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
     private lateinit var pager: ViewPager2
     private lateinit var status: TextView
     private lateinit var queryBox: EditText
-    private lateinit var auto: CheckBox
+    private var autoNext = false
     private lateinit var captchaHint: TextView
 
     private lateinit var player: ExoPlayer
@@ -54,11 +58,10 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
         pager = findViewById(R.id.pager)
         status = findViewById(R.id.status)
         queryBox = findViewById(R.id.query)
-        auto = findViewById(R.id.auto)
         captchaHint = findViewById(R.id.captchaHint)
 
         val prefs = getSharedPreferences("ayar", Context.MODE_PRIVATE)
-        auto.isChecked = prefs.getBoolean("oto", false)
+        autoNext = prefs.getBoolean("oto", false)
 
         // Oynatıcı: önizleme klipleri bir oynatma listesi olarak sıralanır
         val http = DefaultHttpDataSource.Factory()
@@ -68,7 +71,7 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
         player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(this).setDataSourceFactory(http))
             .build()
-        player.repeatMode = repeatFor(auto.isChecked)
+        player.repeatMode = repeatFor(autoNext)
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 // "Oto" açıkken klip bitince bir sonrakine kendiliğinden kay
@@ -99,6 +102,8 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
             onTap = { player.playWhenReady = !player.playWhenReady }
         )
         scraper = YandexScraper(web, this)
+        scraper.safeLevel = prefs.getInt("filtre", 1)
+        scraper.incognito = prefs.getBoolean("gizli", true)
         pager.adapter = adapter
         pager.offscreenPageLimit = 1
         pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
@@ -108,17 +113,14 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
             }
         })
 
-        auto.setOnCheckedChangeListener { _, checked ->
-            player.repeatMode = repeatFor(checked)
-            prefs.edit().putBoolean("oto", checked).apply()
-        }
+        findViewById<Button>(R.id.settingsBtn).setOnClickListener { showSettings() }
         findViewById<Button>(R.id.searchBtn).setOnClickListener { startSearch() }
         queryBox.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) { startSearch(); true } else false
         }
 
-        val last = prefs.getString("son", "") ?: ""
-        queryBox.setText(last)
+        if (scraper.incognito) prefs.edit().remove("son").apply()
+        else queryBox.setText(prefs.getString("son", "") ?: "")
         handleShare(intent)
     }
 
@@ -141,7 +143,10 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
         val q = queryBox.text.toString().trim()
         if (q.isEmpty()) return
         lastQuery = q
-        getSharedPreferences("ayar", Context.MODE_PRIVATE).edit().putString("son", q).apply()
+        // Gizli sekmede son arama kaydedilmez
+        if (!scraper.incognito) {
+            getSharedPreferences("ayar", Context.MODE_PRIVATE).edit().putString("son", q).apply()
+        }
         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager)
             .hideSoftInputFromWindow(queryBox.windowToken, 0)
         queryBox.clearFocus()
@@ -156,6 +161,57 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
         status.text = "“$q” aranıyor…"
         status.visibility = View.VISIBLE
         scraper.search(q)
+    }
+
+    private fun showSettings() {
+        val prefs = getSharedPreferences("ayar", Context.MODE_PRIVATE)
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val gizli = CheckBox(this).apply {
+            text = "Gizli sekmede ara (çerez, geçmiş ve önbellek saklanmaz)"
+            isChecked = scraper.incognito
+        }
+        val oto = CheckBox(this).apply {
+            text = "Klip bitince sonrakine otomatik geç"
+            isChecked = autoNext
+        }
+        val label = TextView(this).apply {
+            text = "Güvenli arama"
+            setPadding(0, pad / 2, 0, 0)
+            textSize = 16f
+        }
+        val names = listOf("Kapalı (filtre yok)", "Orta (varsayılan)", "Aile modu (sıkı)")
+        val group = RadioGroup(this)
+        names.forEachIndexed { i, n ->
+            group.addView(RadioButton(this).apply { id = 1000 + i; text = n })
+        }
+        group.check(1000 + scraper.safeLevel)
+        box.addView(gizli); box.addView(oto); box.addView(label); box.addView(group)
+
+        AlertDialog.Builder(this)
+            .setTitle("Ayarlar")
+            .setView(box)
+            .setPositiveButton("Kaydet") { _, _ ->
+                val level = (group.checkedRadioButtonId - 1000).coerceIn(0, 2)
+                val levelChanged = level != scraper.safeLevel
+                scraper.safeLevel = level
+                scraper.incognito = gizli.isChecked
+                autoNext = oto.isChecked
+                player.repeatMode = repeatFor(autoNext)
+                val e = prefs.edit()
+                    .putInt("filtre", level)
+                    .putBoolean("gizli", gizli.isChecked)
+                    .putBoolean("oto", autoNext)
+                if (gizli.isChecked) e.remove("son")
+                e.apply()
+                // Filtre değiştiyse mevcut aramayı yeni ayarla tekrarla
+                if (levelChanged && lastQuery.isNotEmpty()) startSearch()
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
     }
 
     private fun playAt(pos: Int) {
@@ -242,6 +298,7 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
     }
 
     override fun onDestroy() {
+        if (scraper.incognito) scraper.wipe()
         player.release()
         web.destroy()
         super.onDestroy()

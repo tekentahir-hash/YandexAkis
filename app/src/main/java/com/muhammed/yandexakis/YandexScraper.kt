@@ -5,6 +5,8 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
+import android.webkit.WebSettings
+import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONArray
@@ -43,6 +45,28 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
         private set
     var exhausted = false
         private set
+
+    /** Güvenli arama: 0 = kapalı, 1 = orta (Yandex varsayılanı), 2 = aile modu */
+    var safeLevel = 1
+
+    /** Gizli sekme: çerez, önbellek ve geçmiş kalıcı olarak saklanmaz */
+    var incognito = true
+        set(value) {
+            field = value
+            web.settings.cacheMode =
+                if (value) WebSettings.LOAD_NO_CACHE else WebSettings.LOAD_DEFAULT
+            if (value) wipe()
+        }
+
+    /** Gizli sekmenin izlerini siler: çerezler, site verileri, önbellek, geçmiş */
+    fun wipe() {
+        CookieManager.getInstance().removeAllCookies(null)
+        CookieManager.getInstance().flush()
+        WebStorage.getInstance().deleteAllData()
+        web.clearCache(true)
+        web.clearHistory()
+        web.clearFormData()
+    }
 
     init {
         setup()
@@ -89,12 +113,24 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
     }
 
     private fun load() {
+        applySafeSearch()
+        val family = when (safeLevel) { 0 -> "&family=no"; 2 -> "&family=yes"; else -> "" }
         val url = "https://yandex.com.tr/video/search?text=" +
-            URLEncoder.encode(query, "UTF-8") + (if (page > 0) "&p=$page" else "")
+            URLEncoder.encode(query, "UTF-8") + family + (if (page > 0) "&p=$page" else "")
         web.loadUrl(url)
         // Sayfa hiç bitmezse yine de dene
         val t = token
         schedule(15000) { if (t == token && busy) extract(t, fromLoad = true) }
+    }
+
+    /** Yandex'in arama ayarı çerezi (sp.family) ile filtre düzeyini bildirir. */
+    private fun applySafeSearch() {
+        val cm = CookieManager.getInstance()
+        for (d in listOf(".yandex.com.tr", ".yandex.com", ".yandex.ru")) {
+            cm.setCookie("https://${d.removePrefix(".")}",
+                "yp=2145916800.sp.family:$safeLevel; Domain=$d; Path=/")
+        }
+        cm.flush()
     }
 
     private fun pageFinished(url: String) {
