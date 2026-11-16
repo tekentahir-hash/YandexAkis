@@ -1,0 +1,48 @@
+name: APK Oluştur
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Derle
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace 2>&1 | tee build.log
+      - name: Hata kaydını depoya yaz
+        if: failure()
+        shell: bash
+        run: |
+          git config user.name "build-bot"
+          git config user.email "build-bot@users.noreply.github.com"
+          grep -nE "^e: |error:|What went wrong|FAILURE|Caused by|> " build.log | head -150 > hata.txt || true
+          tail -200 build.log >> hata.txt
+          git checkout --orphan log
+          git rm -rfq --cached . || true
+          git add -f hata.txt
+          git commit -qm "derleme hatası"
+          git push -f origin log
+      - name: APK'yı Releases'a koy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk YandexAkis.apk
+          gh release create "v${{ github.run_number }}" YandexAkis.apk \
+            --title "Yandex Akış (sürüm ${{ github.run_number }})" \
+            --notes "Telefondan YandexAkis.apk dosyasına dokunup indir ve kur." \
+            --repo "${{ github.repository }}"
