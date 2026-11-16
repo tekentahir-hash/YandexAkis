@@ -13,6 +13,14 @@
         android:layout_marginTop="64dp"
         android:visibility="invisible" />
 
+    <!-- GIF araması için ikinci görünmez tarayıcı -->
+    <WebView
+        android:id="@+id/webGif"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_marginTop="64dp"
+        android:visibility="invisible" />
+
     <androidx.viewpager2.widget.ViewPager2
         android:id="@+id/pager"
         android:layout_width="match_parent"
@@ -45,7 +53,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:hint="Yandex'te video ara"
+            android:hint="Video ve GIF ara"
             android:imeOptions="actionSearch"
             android:inputType="text"
             android:maxLines="1"

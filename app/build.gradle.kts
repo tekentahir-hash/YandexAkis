@@ -11,8 +11,8 @@ android {
         applicationId = "com.muhammed.yandexakis"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
     // Sabit imza: yeni sürümler eskisinin üzerine silmeden kurulur
     signingConfigs {
@@ -39,4 +39,6 @@ dependencies {
     implementation("androidx.viewpager2:viewpager2:1.1.0")
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    implementation("com.github.bumptech.glide:glide:4.16.0")
+    implementation("androidx.webkit:webkit:1.12.1")
 }
