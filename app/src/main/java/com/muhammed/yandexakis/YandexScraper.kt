@@ -61,6 +61,10 @@ class YandexScraper(
     private var hoverRunning = false
     private var hoverLeft = 0
     private var pendingThumbs = 0
+
+    /** Klip bulunamazsa sırayla denenecek Yandex alan adları */
+    private val domains = listOf("yandex.com.tr", "yandex.com", "yandex.ru")
+    private var domainIdx = 0
     private var totalFound = 0
 
     var busy = false
@@ -167,6 +171,7 @@ class YandexScraper(
         page = 0
         misses = 0
         totalFound = 0
+        domainIdx = 0
         hoverRunning = false
         exhausted = false
         seen.clear()
@@ -198,7 +203,7 @@ class YandexScraper(
         val q = URLEncoder.encode(query, "UTF-8")
         val p = if (page > 0) "&p=$page" else ""
         val url = when (kind) {
-            Kind.VIDEO -> "https://yandex.com.tr/video/search?text=$q$family$p"
+            Kind.VIDEO -> "https://${domains[domainIdx]}/video/search?text=$q$family$p"
             Kind.GIF -> "https://yandex.com.tr/images/search?text=$q&itype=gifan$family$p"
         }
         web.loadUrl(url)
@@ -284,6 +289,15 @@ class YandexScraper(
             }
             misses++
             when {
+                // Bu alan adında hiç klip çıkmadıysa sıradaki Yandex alan adını dene
+                kind == Kind.VIDEO && totalFound == 0 && misses >= 2 && domainIdx < domains.size - 1 -> {
+                    domainIdx++
+                    page = 0
+                    misses = 0
+                    pendingThumbs = 0
+                    listener.onProgress(this, "Klip yok, ${domains[domainIdx]} deneniyor…")
+                    load()
+                }
                 misses >= 4 -> {
                     exhausted = true
                     busy = false
