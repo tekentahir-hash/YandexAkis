@@ -4,6 +4,9 @@ import android.annotation.SuppressLint
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.webkit.CookieManager
 import android.webkit.WebSettings
 import android.webkit.WebStorage
@@ -12,6 +15,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebViewClient
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -56,6 +60,7 @@ class YandexScraper(
     private var lastInfo = ""
     private var hoverRunning = false
     private var hoverLeft = 0
+    private var pendingThumbs = 0
     private var totalFound = 0
 
     var busy = false
@@ -95,6 +100,11 @@ class YandexScraper(
             blockNetworkImage = true // veri tasarrufu; doğrulamada açılır
         }
         forceDesktop()
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                WebViewCompat.addDocumentStartJavaScript(web, MOUSE_PATCH_JS, setOf("*"))
+            }
+        } catch (_: Throwable) {}
         web.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView, url: String) {
                 pageFinished(url)
@@ -157,6 +167,7 @@ class YandexScraper(
         page = 0
         misses = 0
         totalFound = 0
+        hoverRunning = false
         exhausted = false
         seen.clear()
         token++
@@ -246,6 +257,11 @@ class YandexScraper(
             val all = parse(res)
             val fresh = all.filter { seen.add(it.preview) }
             totalFound += fresh.size
+            if (kind == Kind.VIDEO && !hoverRunning && pendingThumbs > 0) {
+                hoverRunning = true
+                hoverLeft = pendingThumbs
+                hoverLoop(t)
+            }
             listener.onProgress(this, lastInfo + "\nbulunan toplam: $totalFound, yeni: ${fresh.size}" +
                 (if (hoverRunning) "\nvideoların üzerine geliniyor: $hoverLeft kaldı" else ""))
             if (hoverRunning) {
@@ -279,12 +295,66 @@ class YandexScraper(
         }
     }
 
+    /**
+     * Sıradaki küçük resmi ekrana getirir, Android'in gerçek fare sinyalini
+     * (SOURCE_MOUSE hover) gönderir; Yandex klibi yükleyince adresini okur.
+     */
+    private fun hoverLoop(t: Int) {
+        web.evaluateJavascript("(function(){$SETUP_JS return window.__yaNext(); })()") { res ->
+            if (t != token) return@evaluateJavascript
+            val o = try {
+                JSONObject(JSONTokener(res).nextValue() as String)
+            } catch (e: Exception) { JSONObject() }
+            hoverLeft = o.optInt("left")
+            if (hoverLeft <= 0) {
+                hoverRunning = false
+                return@evaluateJavascript
+            }
+            val cssW = o.optDouble("w", 0.0)
+            val scale = if (cssW > 0 && web.width > 0) (web.width / cssW).toFloat() else 1f
+            val x = (o.optDouble("x") * scale).toFloat()
+            val y = (o.optDouble("y") * scale).toFloat()
+            handler.postDelayed({
+                if (t == token) {
+                    mouse(x - 6, y - 4, MotionEvent.ACTION_HOVER_ENTER)
+                    mouse(x - 3, y - 2, MotionEvent.ACTION_HOVER_MOVE)
+                    mouse(x, y, MotionEvent.ACTION_HOVER_MOVE)
+                }
+            }, 250)
+            handler.postDelayed({ if (t == token) mouse(x + 2, y + 1, MotionEvent.ACTION_HOVER_MOVE) }, 700)
+            handler.postDelayed({
+                if (t != token) return@postDelayed
+                web.evaluateJavascript("window.__yaRead ? window.__yaRead() : 0") { found ->
+                    if (t != token) return@evaluateJavascript
+                    mouse(x, y, MotionEvent.ACTION_HOVER_EXIT)
+                    // klip yakalandıysa beklemeden akışa ver
+                    if (found?.trim() == "1") schedule(50) { if (t == token) extract(t, false) }
+                    hoverLoop(t)
+                }
+            }, 1600)
+        }
+    }
+
+    private fun mouse(x: Float, y: Float, action: Int) {
+        val now = SystemClock.uptimeMillis()
+        val props = arrayOf(MotionEvent.PointerProperties().apply {
+            id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE
+        })
+        val coords = arrayOf(MotionEvent.PointerCoords().apply {
+            this.x = x; this.y = y; pressure = 0f; size = 1f
+        })
+        val ev = MotionEvent.obtain(
+            now, now, action, 1, props, coords, 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0
+        )
+        try { web.dispatchGenericMotionEvent(ev) } catch (_: Exception) {}
+        ev.recycle()
+    }
+
     private fun parse(res: String?): List<VideoItem> = try {
         val s = JSONTokener(res).nextValue() as? String
         if (s == null) { lastInfo = "JS sonucu boş"; emptyList() } else {
             val root = JSONObject(s)
-            hoverRunning = root.optInt("run") == 1
-            hoverLeft = root.optInt("left")
+            pendingThumbs = root.optInt("pend")
             lastInfo = "Sayfa: " + root.optString("title").take(50) +
                 "\nAdres: " + root.optString("url").take(70) +
                 "\nHTML: " + (root.optInt("len") / 1024) + " KB, aday: " + root.optInt("cand") +
@@ -343,7 +413,7 @@ class YandexScraper(
 
         private const val JS_END = """
   return JSON.stringify({items: out, len: h.length, cand: cand, url: location.href, title: document.title,
-    run: window.__yaRun ? 1 : 0, left: window.__yaLeft || 0,
+    pend: window.__yaPend ? window.__yaPend() : 0,
     thumbs: document.querySelectorAll('img').length, vtags: document.querySelectorAll('video').length,
     sample: (function(){ var v = document.querySelector('video'); if (!v) return '';
       return (v.outerHTML || '').replace(/<source/g,' <source').slice(0, 260) + ' | src=' + String(v.currentSrc || v.src || '').slice(0, 120); })(),
@@ -352,74 +422,84 @@ class YandexScraper(
 })();
 """
 
-        // Masaüstü Yandex, önizleme klibini ancak fare videonun üzerine gelince yükler.
-        // Burada her küçük resmin üzerine sırayla "fareyle gelinmiş" gibi olay gönderip
-        // o anda oynamaya başlayan <video> klibini (ya da ağdan inen mp4'ü) yakalıyoruz.
-        private const val HOVER_JS = """
-  document.querySelectorAll('video').forEach(function(v){ try { v.muted = true; } catch(e) {} });
-  window.__yaOut = window.__yaOut || [];
-  window.__yaSeen = window.__yaSeen || {};
-  if (!window.__yaDone) window.__yaDone = new WeakSet();
-  if (!window.__yaRun) {
-    var imgs = Array.prototype.slice.call(document.querySelectorAll('img, video')).filter(function(i){
+        // Sayfaya "fare var, dokunmatik ekran yok" dedirtir; Yandex dokunmatik
+        // cihazlarda fareyle üzerine gelme önizlemesini kapatıyor olabilir.
+        private const val MOUSE_PATCH_JS = """
+(function(){ try {
+  var mm = window.matchMedia ? window.matchMedia.bind(window) : null;
+  if (mm) window.matchMedia = function(q){
+    var s = String(q), fake = null;
+    if (/(any-)?hover:\s*hover|(any-)?pointer:\s*fine/.test(s)) fake = true;
+    if (/(any-)?hover:\s*none|(any-)?pointer:\s*coarse/.test(s)) fake = false;
+    if (fake === null) return mm(q);
+    return {matches: fake, media: s, onchange: null,
+      addListener: function(){}, removeListener: function(){},
+      addEventListener: function(){}, removeEventListener: function(){},
+      dispatchEvent: function(){ return false; }};
+  };
+  try { Object.defineProperty(navigator, 'maxTouchPoints', {get: function(){ return 0; }}); } catch(e) {}
+  [window.Window, window.Document, window.HTMLElement, window.Element].forEach(function(C){
+    try { if (C && C.prototype) { delete C.prototype.ontouchstart; delete C.prototype.ontouchend; } } catch(e) {} });
+} catch(e) {} })();
+"""
+
+        // Sayfaya bir kez yüklenen yardımcılar: sıradaki küçük resmi seç (__yaNext),
+        // fare üzerindeyken yüklenen klibi oku (__yaRead), kalanları say (__yaPend).
+        private const val SETUP_JS = """
+ if (!window.__yaSetup) {
+  window.__yaSetup = 1; window.__yaOut = []; window.__yaSeen = {}; window.__yaDone = new WeakSet();
+  window.__yaCur = null; window.__yaBefore = 0;
+  var thumbs = function(){ return Array.prototype.slice.call(document.querySelectorAll('video, img')).filter(function(i){
       var r = i.getBoundingClientRect();
       if (window.__yaDone.has(i) || r.width < 80 || r.height < 45) return false;
-      if (i.tagName == 'VIDEO') return true;
-      return /vthumb|avatars\.mds|video/i.test(i.currentSrc || i.src || '');
-    });
-    if (imgs.length) {
-      window.__yaRun = 1; window.__yaLeft = imgs.length;
-      var fire = function(el, types){ types.forEach(function(tp){ try {
-        var ev = tp.indexOf('pointer') == 0
-          ? new PointerEvent(tp, {bubbles: tp.indexOf('enter') < 0 && tp.indexOf('leave') < 0, cancelable: true, pointerType: 'mouse', view: window})
-          : new MouseEvent(tp, {bubbles: tp.indexOf('enter') < 0 && tp.indexOf('leave') < 0, cancelable: true, view: window});
-        el.dispatchEvent(ev); } catch(e) {} }); };
-      var cardOf = function(img){ var e = img;
-        for (var k = 0; k < 8 && e.parentElement; k++) { e = e.parentElement;
-          if ((e.innerText || '').trim().length > 25 && e.querySelector('a')) return e; }
-        return img.parentElement || img; };
-      var srcOf = function(v){
-        var c = [v.currentSrc, v.src, (v.querySelector('source') || {}).src,
-                 v.getAttribute('data-src'), v.getAttribute('data-video'), v.getAttribute('data-preview')];
-        for (var i = 0; i < c.length; i++) { var s = c[i];
-          if (s && /^https?:/.test(s) && !window.__yaSeen[s]) return s; }
-        return null; };
-      var newSrc = function(root){
-        if (root.tagName == 'VIDEO') { root.muted = true; var r0 = srcOf(root); if (r0) return r0; }
-        var vs = root.querySelectorAll('video');
-        for (var i = 0; i < vs.length; i++) { vs[i].muted = true; var s = srcOf(vs[i]); if (s) return s; }
-        return null; };
-      var netMp4 = function(from){ var es = performance.getEntriesByType('resource');
-        for (var i = es.length - 1; i >= from; i--) { var n = es[i].name;
-          if ((/\.(mp4|m3u8)(\?|$)/i.test(n) || /video-preview|vh-preview|preview.*\.mp4|master.*\.m3u8/i.test(n)) && !window.__yaSeen[n]) return n; }
-        return null; };
-      var idx = 0;
-      var step = function(){
-        if (idx >= imgs.length) { window.__yaRun = 0; window.__yaLeft = 0; return; }
-        var img = imgs[idx++]; window.__yaDone.add(img); window.__yaLeft = imgs.length - idx;
-        var card = cardOf(img);
-        try { img.scrollIntoView({block: 'center'}); } catch(e) {}
-        var before = performance.getEntriesByType('resource').length;
-        var tg = [img, img.parentElement, card];
-        tg.forEach(function(t){ if (t) fire(t, ['pointerover','pointerenter','mouseover','mouseenter','pointermove','mousemove']); });
-        setTimeout(function(){
-          var s = newSrc(img) || newSrc(card) || netMp4(before);
-          if (s) {
-            window.__yaSeen[s] = 1;
-            var te = card.querySelector('[class*="title" i], h2, h3');
-            var title = ((te ? te.innerText : card.innerText) || '').trim().split('\n')[0].slice(0, 200);
-            var links = Array.prototype.slice.call(card.querySelectorAll('a[href]')).map(function(a){ return a.href; });
-            var ext = links.filter(function(x){ return !/yandex\./.test(x); })[0] || links[0] || '';
-            var adult = /blur|adult/i.test(card.className + ' ' + (card.innerHTML || '').slice(0, 4000));
-            window.__yaOut.push({p: s, t: title, u: ext, a: adult});
-          }
-          tg.forEach(function(t){ if (t) fire(t, ['pointerout','pointerleave','mouseout','mouseleave']); });
-          step();
-        }, 1400);
-      };
-      step();
-    }
-  }
+      return i.tagName == 'VIDEO' || /vthumb/i.test(i.currentSrc || i.src || ''); }); };
+  window.__yaPend = function(){ return thumbs().length; };
+  window.__yaNext = function(){
+    var c = thumbs();
+    if (!c.length) return JSON.stringify({left: 0});
+    var el = c[0]; window.__yaDone.add(el); window.__yaCur = el;
+    try { el.scrollIntoView({block: 'center'}); } catch(e) {}
+    var r = el.getBoundingClientRect();
+    window.__yaBefore = performance.getEntriesByType('resource').length;
+    return JSON.stringify({left: c.length, x: r.left + r.width / 2, y: r.top + r.height / 2, w: window.innerWidth});
+  };
+  var srcOf = function(v){
+    if (!v || v.tagName != 'VIDEO') return null;
+    v.muted = true;
+    var c = [v.currentSrc, v.src, (v.querySelector('source') || {}).src,
+             v.getAttribute('data-src'), v.getAttribute('data-video'), v.getAttribute('data-preview')];
+    for (var i = 0; i < c.length; i++) { var s = c[i];
+      if (s && /^https?:/.test(s) && !window.__yaSeen[s]) return s; }
+    return null; };
+  var cardOf = function(el){ var e = el;
+    for (var k = 0; k < 8 && e.parentElement; k++) { e = e.parentElement;
+      if ((e.innerText || '').trim().length > 25 && e.querySelector('a')) return e; }
+    return el.parentElement || el; };
+  var netMedia = function(from){ var es = performance.getEntriesByType('resource');
+    for (var i = es.length - 1; i >= from; i--) { var n = es[i].name;
+      if ((/\.(mp4|m3u8)(\?|$)/i.test(n) || /video-preview|master.*\.m3u8/i.test(n)) && !window.__yaSeen[n]) return n; }
+    return null; };
+  window.__yaRead = function(){
+    var el = window.__yaCur; if (!el) return 0;
+    var card = cardOf(el);
+    var s = srcOf(el);
+    if (!s) { var vs = card.querySelectorAll('video'); for (var i = 0; i < vs.length && !s; i++) s = srcOf(vs[i]); }
+    if (!s) s = netMedia(window.__yaBefore);
+    if (!s) return 0;
+    window.__yaSeen[s] = 1;
+    var te = card.querySelector('[class*="title" i], h2, h3');
+    var title = ((te ? te.innerText : card.innerText) || '').trim().split('\n')[0].slice(0, 200);
+    var links = Array.prototype.slice.call(card.querySelectorAll('a[href]')).map(function(a){ return a.href; });
+    var ext = links.filter(function(x){ return !/yandex\./.test(x); })[0] || links[0] || '';
+    var adult = /blur|adult/i.test(card.className + ' ' + (card.innerHTML || '').slice(0, 4000));
+    window.__yaOut.push({p: s, t: title, u: ext, a: adult});
+    return 1;
+  };
+ }
+"""
+
+        // Fareyle yakalanan klipleri sonuç listesine ekler
+        private const val HOVER_JS = SETUP_JS + """
   window.__yaOut.splice(0).forEach(function(o){ if (!seen[o.p]) { seen[o.p] = 1; cand++; out.push(o); } });
 """
 
