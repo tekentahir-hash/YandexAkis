@@ -171,11 +171,29 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
     private fun repeatFor(autoNext: Boolean) =
         if (autoNext) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_ONE
 
+    // Tarayıcılar hep "görünür" kalır (sayfa arka planda sayılıp durmasın diye);
+    // akış onların üstünü siyah zeminle örter. Göstermek için akışı gizleyip
+    // istenen tarayıcıyı öne alıyoruz.
+    private val captchaOn = HashSet<YandexScraper.Kind>()
+
+    private fun showWeb(w: WebView?) {
+        if (w == null) {
+            pager.visibility = View.VISIBLE
+            pager.bringToFront()
+            findViewById<View>(R.id.topBar).bringToFront()
+            status.bringToFront()
+            captchaHint.bringToFront()
+        } else {
+            w.bringToFront()
+            pager.visibility = View.INVISIBLE
+            findViewById<View>(R.id.topBar).bringToFront()
+            captchaHint.bringToFront()
+        }
+    }
+
     private fun cycleDebugView() {
         debugView = (debugView + 1) % 3
-        webVideo.visibility = if (debugView == 1) View.VISIBLE else View.INVISIBLE
-        webGif.visibility = if (debugView == 2) View.VISIBLE else View.INVISIBLE
-        pager.visibility = if (debugView == 0) View.VISIBLE else View.INVISIBLE
+        showWeb(when (debugView) { 1 -> webVideo; 2 -> webGif; else -> null })
         if (debugView != 0) {
             webVideo.settings.blockNetworkImage = false
             webGif.settings.blockNetworkImage = false
@@ -392,10 +410,10 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
 
     override fun onCaptcha(src: YandexScraper, visible: Boolean) {
         if (!active(src)) return
-        src.web.visibility = if (visible) View.VISIBLE else View.INVISIBLE
-        val anyCaptcha = scrapers.any { it.web.visibility == View.VISIBLE }
-        pager.visibility = if (anyCaptcha) View.INVISIBLE else View.VISIBLE
-        captchaHint.visibility = if (anyCaptcha) View.VISIBLE else View.GONE
+        if (visible) captchaOn.add(src.kind) else captchaOn.remove(src.kind)
+        val first = scrapers.firstOrNull { it.kind in captchaOn }
+        showWeb(first?.web)
+        captchaHint.visibility = if (first != null) View.VISIBLE else View.GONE
         if (visible) {
             status.visibility = View.GONE
             player.pause()
@@ -439,7 +457,7 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
 
     override fun onResume() {
         super.onResume()
-        if (current in items.indices && debugView == 0 && !items[current].isGif) player.play()
+        if (current in items.indices && debugView == 0 && captchaOn.isEmpty() && !items[current].isGif) player.play()
     }
 
     override fun onDestroy() {

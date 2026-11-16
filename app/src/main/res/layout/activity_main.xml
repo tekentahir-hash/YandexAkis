@@ -11,7 +11,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginTop="64dp"
-        android:visibility="invisible" />
+        android:visibility="visible" />
 
     <!-- GIF araması için ikinci görünmez tarayıcı -->
     <WebView
@@ -19,12 +19,13 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_marginTop="64dp"
-        android:visibility="invisible" />
+        android:visibility="visible" />
 
     <androidx.viewpager2.widget.ViewPager2
         android:id="@+id/pager"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:background="#000000"
         android:orientation="vertical" />
 
     <TextView
