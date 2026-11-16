@@ -360,7 +360,7 @@ class YandexScraper(
                 "\nHTML: " + (root.optInt("len") / 1024) + " KB, aday: " + root.optInt("cand") +
                 ", küçük resim: " + root.optInt("thumbs") + ", video etiketi: " + root.optInt("vtags") +
                 ", ağdan video: " + root.optInt("net") +
-                (if (root.optString("sample").isNotEmpty()) "\nÖrnek: " + root.optString("sample") else "") +
+                (if (root.optString("diag").isNotEmpty()) "\nBileşen: " + root.optString("diag") else "") +
                 (if (root.has("err")) "\nHata: " + root.optString("err") else "")
             val a = root.getJSONArray("items")
             (0 until a.length()).map { i ->
@@ -413,7 +413,7 @@ class YandexScraper(
 
         private const val JS_END = """
   return JSON.stringify({items: out, len: h.length, cand: cand, url: location.href, title: document.title,
-    pend: window.__yaPend ? window.__yaPend() : 0,
+    pend: window.__yaPend ? window.__yaPend() : 0, diag: window.__yaDiagText || '',
     thumbs: document.querySelectorAll('img').length, vtags: document.querySelectorAll('video').length,
     sample: (function(){ var v = document.querySelector('video'); if (!v) return '';
       return (v.outerHTML || '').replace(/<source/g,' <source').slice(0, 260) + ' | src=' + String(v.currentSrc || v.src || '').slice(0, 120); })(),
@@ -498,9 +498,49 @@ class YandexScraper(
  }
 """
 
-        // Fareyle yakalanan klipleri sonuç listesine ekler
+        // Fareyle yakalanan klipleri ekler; ayrıca her küçük resmin React bileşen
+        // bilgilerinde (fiber props) saklanan önizleme adresini doğrudan okur.
         private const val HOVER_JS = SETUP_JS + """
   window.__yaOut.splice(0).forEach(function(o){ if (!seen[o.p]) { seen[o.p] = 1; cand++; out.push(o); } });
+  var mediaRe = /(\.(mp4|m3u8|webm)(\?|$))|video-preview|vh-preview/i;
+  var diag = window.__yaDiag || (window.__yaDiag = {fibers: 0, keys: []});
+  var walk = function(o, d, path, seenObj){
+    if (o == null || d > 5) return null;
+    if (typeof o == 'string') return (mediaRe.test(o) && /^(https?:)?\/\//.test(o)) ? o : null;
+    if (typeof o != 'object' || seenObj.indexOf(o) >= 0) return null;
+    if (o.nodeType || o === window) return null;
+    seenObj.push(o);
+    var ks = Object.keys(o).slice(0, 60);
+    for (var i = 0; i < ks.length; i++) { var k = ks[i];
+      if (k == 'children' || k == '_owner' || k == 'ref' || k.charAt(0) == '_') continue;
+      var v; try { v = o[k]; } catch(e) { continue; }
+      if (/preview|video|src|url|stream/i.test(k) && diag.keys.length < 6 && (typeof v == 'string' || typeof v == 'number')) {
+        var line = path + '.' + k + '=' + String(v).slice(0, 90);
+        if (diag.keys.indexOf(line) < 0 && /preview/i.test(k)) diag.keys.push(line);
+      }
+      var r = walk(v, d + 1, path + '.' + k, seenObj); if (r) return r; }
+    return null; };
+  var fiberOf = function(el){ var ks = Object.keys(el);
+    for (var i = 0; i < ks.length; i++) if (ks[i].indexOf('__reactFiber') == 0 || ks[i].indexOf('__reactInternalInstance') == 0) return el[ks[i]];
+    return null; };
+  var vids = document.querySelectorAll('video');
+  for (var vi = 0; vi < vids.length; vi++) {
+    var v = vids[vi], f = fiberOf(v), found = null, hops = 0;
+    if (f) diag.fibers++;
+    while (f && hops < 25 && !found) { found = walk(f.memoizedProps, 0, 'p' + hops, []); f = f.return; hops++; }
+    if (!found) continue;
+    if (found.indexOf('//') == 0) found = 'https:' + found;
+    cand++;
+    if (seen[found] || window.__yaSeen[found]) continue; seen[found] = 1; window.__yaSeen[found] = 1;
+    var card = v; for (var k2 = 0; k2 < 8 && card.parentElement; k2++) { card = card.parentElement;
+      if ((card.innerText || '').trim().length > 25 && card.querySelector('a')) break; }
+    var te = card.querySelector('[class*="title" i], h2, h3');
+    var title = ((te ? te.innerText : card.innerText) || '').trim().split('\n')[0].slice(0, 200);
+    var links = Array.prototype.slice.call(card.querySelectorAll('a[href]')).map(function(a){ return a.href; });
+    var ext = links.filter(function(x){ return !/yandex\./.test(x); })[0] || links[0] || '';
+    out.push({p: found, t: title, u: ext, a: /blur|adult/i.test(card.className + ' ' + (card.innerHTML || '').slice(0, 4000))});
+  }
+  window.__yaDiagText = 'react: ' + diag.fibers + (diag.keys.length ? ' | ' + diag.keys.join(' | ') : ' | önizleme alanı yok');
 """
 
         // Video: Yandex'in animasyonlu önizleme klipleri
