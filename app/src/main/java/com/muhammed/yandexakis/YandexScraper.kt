@@ -32,6 +32,7 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
         fun onItems(items: List<VideoItem>)
         fun onCaptcha(visible: Boolean)
         fun onRoundEnd(newCount: Int, exhausted: Boolean)
+        fun onProgress(msg: String)
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -135,13 +136,14 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
     }
 
     private fun pageFinished(url: String) {
+        listener.onProgress("Sayfa yüklendi: " + url.take(70))
         if (url.contains("captcha", ignoreCase = true)) {
             handler.removeCallbacksAndMessages(null)
             web.settings.blockNetworkImage = false
             listener.onCaptcha(true)
             return
         }
-        if (!url.contains("/video/search")) return
+        if (!url.contains("/video")) return
         web.settings.blockNetworkImage = true
         listener.onCaptcha(false)
         val t = token
@@ -162,9 +164,12 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
     }
 
     private fun extract(t: Int, fromLoad: Boolean) {
+        listener.onProgress("Önizlemeler aranıyor (deneme ${misses + 1}/4)…")
         web.evaluateJavascript(EXTRACT_JS) { res ->
             if (t != token) return@evaluateJavascript
-            val fresh = parse(res).filter { seen.add(it.preview) }
+            val all = parse(res)
+            val fresh = all.filter { seen.add(it.preview) }
+            listener.onProgress(lastInfo + "\nbulunan önizleme: ${all.size}, yeni: ${fresh.size}")
             if (fresh.isNotEmpty()) {
                 misses = 0
                 busy = false
@@ -185,10 +190,17 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
         }
     }
 
+    private var lastInfo = ""
+
     private fun parse(res: String?): List<VideoItem> = try {
         val s = JSONTokener(res).nextValue() as? String
-        if (s == null) emptyList() else {
-            val a = JSONArray(s)
+        if (s == null) { lastInfo = "JS sonucu boş"; emptyList() } else {
+            val root = org.json.JSONObject(s)
+            lastInfo = "Sayfa: " + root.optString("title").take(50) +
+                "\nAdres: " + root.optString("url").take(70) +
+                "\nHTML: " + (root.optInt("len") / 1024) + " KB, mp4: " + root.optInt("mp4") +
+                (if (root.has("err")) "\nHata: " + root.optString("err") else "")
+            val a = root.getJSONArray("items")
             (0 until a.length()).map { i ->
                 val o = a.getJSONObject(i)
                 val u = o.optString("u").ifBlank { null }
@@ -202,6 +214,7 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
             }
         }
     } catch (e: Exception) {
+        lastInfo = "Okuma hatası: " + e.message
         emptyList()
     }
 
@@ -214,8 +227,9 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
         // yakınındaki başlığı ve asıl video adresini eşleştirir.
         private val EXTRACT_JS = """
 (function(){
+ var h = '';
  try {
-  var h = document.documentElement.outerHTML;
+  h = document.documentElement.outerHTML;
   h = h.replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/\\u002F/gi,'/').replace(/\\\//g,'/');
   var re = /video-preview\.s3\.yandex\.net(?:\/|%2F)([A-Za-z0-9_\-]+(?:(?:\/|%2F)[A-Za-z0-9_\-]+)*)\.mp4/gi;
   var titleRe = /"(?:title|name|clear_title|headline)"\s*:\s*"((?:[^"\\]|\\.){3,300})"/g;
@@ -238,8 +252,9 @@ class YandexScraper(private val web: WebView, private val listener: Listener) {
       || /serp-item_(?:adult|blur)|thumb_blur|_blurred|is-adult/i.test(near);
     out.push({p: 'https://video-preview.s3.yandex.net/' + id + '.mp4', t: t || '', u: u || '', a: adult});
   }
-  return JSON.stringify(out);
- } catch (e) { return '[]'; }
+  var mp4 = (h.match(/\.mp4/g) || []).length;
+  return JSON.stringify({items: out, len: h.length, mp4: mp4, url: location.href, title: document.title});
+ } catch (e) { return JSON.stringify({items: [], len: h.length, url: location.href, title: document.title, err: String(e)}); }
 })();
 """.trimIndent()
     }

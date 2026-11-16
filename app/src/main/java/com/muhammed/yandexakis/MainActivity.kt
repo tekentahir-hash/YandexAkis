@@ -114,7 +114,19 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
             }
         })
 
-        findViewById<Button>(R.id.settingsBtn).setOnClickListener { showSettings() }
+        findViewById<Button>(R.id.settingsBtn).apply {
+            setOnClickListener { showSettings() }
+            // Uzun bas: arka plandaki Yandex sayfasını göster/gizle (sorun giderme)
+            setOnLongClickListener {
+                val show = web.visibility != View.VISIBLE
+                web.visibility = if (show) View.VISIBLE else View.INVISIBLE
+                pager.visibility = if (show) View.INVISIBLE else View.VISIBLE
+                if (show) { web.settings.blockNetworkImage = false; player.pause() }
+                Toast.makeText(this@MainActivity,
+                    if (show) "Yandex sayfası gösteriliyor" else "Akışa dönüldü", Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
         findViewById<Button>(R.id.searchBtn).setOnClickListener { startSearch() }
         queryBox.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) { startSearch(); true } else false
@@ -286,9 +298,17 @@ class MainActivity : ComponentActivity(), YandexScraper.Listener {
         }
     }
 
+    override fun onProgress(msg: String) {
+        if (items.isEmpty()) {
+            status.text = "“$lastQuery” aranıyor…\n\n$msg"
+            status.visibility = View.VISIBLE
+        }
+    }
+
     override fun onRoundEnd(newCount: Int, exhausted: Boolean) {
         if (items.isEmpty() && exhausted) {
-            status.text = "Önizlemesi olan video bulunamadı.\nBaşka bir arama deneyin."
+            status.text = "Önizlemesi olan video bulunamadı.\n\n" + status.text.toString().substringAfter("\n\n", "") +
+                "\n\n(Yandex sayfasını görmek için ⚙ düğmesine uzun basın)"
             status.visibility = View.VISIBLE
         } else if (exhausted && current >= items.size - 1) {
             Toast.makeText(this, "Bu arama için başka video yok", Toast.LENGTH_SHORT).show()
